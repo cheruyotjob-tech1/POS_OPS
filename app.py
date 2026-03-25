@@ -26,7 +26,13 @@ def load_and_process_data(file_path):
     # B. Numeric Cleaning
     numeric_cols = ['QTY', 'CP_PRE_VAT', 'SP_PRE_VAT', 'COST_PRE_VAT', 'NET_SALES', 'VAT_AMT']
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '').str.strip(), errors='coerce').fillna(0)
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.replace(',', '', regex=False)
+            .str.strip()
+        )
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     # C. Derived Column: GROSS_SALES
     df['GROSS_SALES'] = df['NET_SALES'] + df['VAT_AMT']
@@ -47,11 +53,11 @@ def load_and_process_data(file_path):
     return df
 
 # Initialize Data
-DATA_PATH = 'DAILY_POS_TRN_ITEMS_2026-03-22.parquet' # Update path as needed
+DATA_PATH = 'DAILY_POS_TRN_ITEMS_2026-03-22.parquet'
 try:
     df = load_and_process_data(DATA_PATH)
 except Exception as e:
-    st.error(f"Error loading file: {e}")
+    st.error(f"Error loading file: {e}. Please ensure the parquet file is in the same directory.")
     st.stop()
 
 # === 3. STREAMLIT UI ===
@@ -124,7 +130,7 @@ with tabs[1]:
                        color_discrete_map={'Night': '#d62728', 'Day': '#1f77b4'})
     st.plotly_chart(fig_shift, use_container_width=True)
 
-# --- TAB 3: CHANNEL SHARE (Lollipop) ---
+# --- TAB 3: CHANNEL SHARE ---
 with tabs[2]:
     # 2nd Highest Channel Share
     st.subheader("2nd-Highest Channel Share Analysis")
@@ -142,12 +148,12 @@ with tabs[2]:
     fig_lollipop.update_traces(marker=dict(size=12))
     st.plotly_chart(fig_lollipop, use_container_width=True)
 
-# --- TAB 4: OPERATIONS (Heatmaps) ---
+# --- TAB 4: OPERATIONS ---
 with tabs[3]:
     st.subheader("Customer Traffic Heatmap (30-min intervals)")
     
-    # Processing for Heatmap
-    df['TIME_INTERVAL'] = df['TRN_DATE'].dt.floor('30T')
+    # Heatmap Processing
+    df['TIME_INTERVAL'] = df['TRN_DATE'].dt.floor('30min')
     df['TIME_ONLY'] = df['TIME_INTERVAL'].dt.time
     
     traffic = df.groupby(['STORE_NAME', 'TIME_ONLY'])['CUST_CODE'].nunique().reset_index()
@@ -156,9 +162,3 @@ with tabs[3]:
     fig_hm = px.imshow(hm_data, text_auto=True, aspect="auto", color_continuous_scale='Viridis',
                       labels=dict(x="Time", y="Store", color="Receipts"))
     st.plotly_chart(fig_hm, use_container_width=True)
-
-    st.subheader("Active Tills Heatmap")
-    tills = df.groupby(['STORE_NAME', 'TIME_ONLY'])['Till_Code'].nunique().reset_index()
-    hm_tills = tills.pivot(index='STORE_NAME', columns='TIME_ONLY', values='Till_Code').fillna(0)
-    fig_tills = px.imshow(hm_tills, text_auto=True, aspect="auto", color_continuous_scale='Magma')
-    st.plotly_chart(fig_tills, use_container_width=True)
