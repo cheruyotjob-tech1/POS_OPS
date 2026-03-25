@@ -16,12 +16,15 @@ st.set_page_config(layout="wide", page_title="Superdeck (Streamlit)")
 # -----------------------
 @st.cache_data
 def load_parquet(path: str) -> pd.DataFrame:
-    return pd.read_parquet(path, on_bad_lines='skip', low_memory=False)
+    """Load parquet from disk (local path or mounted)."""
+    return pd.read_parquet(path)   # no on_bad_lines, no low_memory
+
 
 @st.cache_data
 def load_uploaded_file(contents: bytes) -> pd.DataFrame:
+    """Load parquet from uploaded file bytes."""
     from io import BytesIO
-    return pd.read_parquet(BytesIO(contents), on_bad_lines='skip', low_memory=False)
+    return pd.read_parquet(BytesIO(contents))   # remove invalid kwargs
 
 def smart_load():
     st.sidebar.markdown("### Upload data (parquet) or use default")
