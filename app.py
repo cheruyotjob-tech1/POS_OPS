@@ -1,8 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Daily Deck Dashboard - Streamlit App
-"""
-
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,10 +6,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import timedelta
 import warnings
+from io import BytesIO
 
 warnings.filterwarnings('ignore')
 
-# ====================== PAGE CONFIG ======================
 st.set_page_config(
     page_title="Daily Deck Dashboard",
     page_icon="📊",
@@ -21,23 +17,38 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("📊 Daily Deck Dashboard - 2026-03-22")
-st.markdown("### POS Transaction Analysis")
+st.title("📊 Daily Deck Dashboard")
+st.markdown("**POS Transaction Analysis • 2026-03-22**")
 
-# ====================== LOAD DATA ======================
-@st.cache_data
-def load_data():
-    df = pd.read_parquet('DAILY_POS_TRN_ITEMS_2026-03-22.parquet')
-    return df
+# ====================== DATA LOADING ======================
+@st.cache_data(ttl=3600)
+def load_uploaded_file(contents: bytes) -> pd.DataFrame:
+    return pd.read_parquet(BytesIO(contents))
 
-df = load_data()
+def smart_load():
+    st.sidebar.markdown("### 📁 Data Source")
+    uploaded = st.sidebar.file_uploader(
+        "Upload DAILY_POS_TRN_ITEMS_*.parquet", 
+        type=["parquet"]
+    )
+    
+    if uploaded is not None:
+        with st.spinner("Loading uploaded parquet file..."):
+            df = load_uploaded_file(uploaded.getvalue())
+            st.sidebar.success(f"✅ Loaded: {uploaded.name}")
+            return df
+    else:
+        st.sidebar.info("👆 Please upload the parquet file to begin")
+        st.stop()
 
-# ====================== BASIC CLEANING ======================
+# Load data
+df = smart_load()
+
+# ====================== DATA CLEANING ======================
 with st.spinner("Cleaning and preparing data..."):
-    # Date conversion
+    # Dates
     df['TRN_DATE'] = pd.to_datetime(df['TRN_DATE'], errors='coerce')
-    df['ZED_DATE'] = pd.to_datetime(df['ZED_DATE'], errors='coerce')
-
+    
     # Numeric columns
     numeric_cols = ['QTY', 'CP_PRE_VAT', 'SP_PRE_VAT', 'COST_PRE_VAT', 'NET_SALES', 'VAT_AMT']
     for col in numeric_cols:
@@ -51,198 +62,151 @@ with st.spinner("Cleaning and preparing data..."):
 
     # Derived columns
     if 'GROSS_SALES' not in df.columns:
-        df['GROSS_SALES'] = df['NET_SALES'] + df['VAT_AMT']
+        df['GROSS_SALES'] = df.get('NET_SALES', 0) + df.get('VAT_AMT', 0)
 
-    # Unique Receipt Code
+    # CUST_CODE (Unique Receipt)
     for col in ['STORE_CODE', 'TILL', 'SESSION', 'RCT']:
         df[col] = df[col].astype(str).fillna('').str.strip()
     
-    df['CUST_CODE'] = (
-        df['STORE_CODE'] + '-' +
-        df['TILL'] + '-' +
-        df['SESSION'] + '-' +
-        df['RCT']
-    )
+    df['CUST_CODE'] = df['STORE_CODE'] + '-' + df['TILL'] + '-' + df['SESSION'] + '-' + df['RCT']
+    
+    # Till_Code & Cashier
+    df['Till_Code'] = df['TILL'].astype(str) + '-' + df['STORE_CODE'].astype(str)
+    if 'CASHIER' in df.columns:
+        df['CASHIER-COUNT'] = df['CASHIER'].astype(str).str.strip() + ' @ ' + df['STORE_NAME'].astype(str)
 
-    df['Till_Code'] = df['TILL'] + '-' + df['STORE_CODE']
-    df['CASHIER-COUNT'] = df['CASHIER'].astype(str).str.strip() + '-' + df['STORE_NAME'].astype(str).str.strip()
-
-st.success(f"✅ Data loaded successfully! Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+st.success(f"✅ Data ready! **{len(df):,} rows** × **{len(df.columns)} columns**")
 
 # ====================== SIDEBAR FILTERS ======================
-st.sidebar.header("🔍 Filters")
-
+st.sidebar.markdown("### 🔍 Filters")
 selected_stores = st.sidebar.multiselect(
-    "Select Stores",
+    "Stores", 
     options=sorted(df['STORE_NAME'].unique()),
-    default=sorted(df['STORE_NAME'].unique())[:5] if len(df['STORE_NAME'].unique()) > 5 else None
+    default=None
 )
 
-date_range = st.sidebar.date_input(
-    "Transaction Date Range",
-    value=(df['TRN_DATE'].min().date(), df['TRN_DATE'].max().date())
-)
-
-# Apply filters
-mask = (df['TRN_DATE'].dt.date >= date_range[0]) & (df['TRN_DATE'].dt.date <= date_range[1])
 if selected_stores:
-    mask = mask & df['STORE_NAME'].isin(selected_stores)
-
-filtered_df = df[mask].copy()
+    df = df[df['STORE_NAME'].isin(selected_stores)].copy()
 
 # ====================== TABS ======================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📈 Sales Overview", 
-    "👥 Customer Traffic & Tills", 
+    "👥 Traffic & Tills", 
     "🛒 Baskets & Products", 
     "💰 Loyalty & Refunds", 
-    "📋 Raw Summary Tables"
+    "📋 Tables"
 ])
 
-# ====================== TAB 1: SALES OVERVIEW ======================
+# ====================== TAB 1: SALES ======================
 with tab1:
     st.header("Sales Overview")
-
+    
     col1, col2 = st.columns(2)
-
+    
     with col1:
-        # Global Sales by Channel L1
-        global_sales = filtered_df.groupby('SALES_CHANNEL_L1', as_index=False)['NET_SALES'].sum()
-        global_sales['NET_SALES_M'] = global_sales['NET_SALES'] / 1_000_000
-        global_sales['PCT'] = global_sales['NET_SALES'] / global_sales['NET_SALES'].sum() * 100
-
-        fig1 = go.Figure(data=[go.Pie(
-            labels=[f"{row['SALES_CHANNEL_L1']} ({row['PCT']:.1f}%)" for _, row in global_sales.iterrows()],
-            values=global_sales['NET_SALES_M'],
-            hole=0.65,
-            hovertemplate='<b>%{label}</b><br>KSh %{value:,.2f}M<extra></extra>'
-        )])
-        fig1.update_layout(title="Sales by Channel (L1) - Millions KSh", height=500)
-        st.plotly_chart(fig1, use_container_width=True)
-
-    with col2:
-        # Sales by SHIFT
-        shift_sales = filtered_df.groupby('SHIFT', as_index=False)['NET_SALES'].sum()
-        shift_sales['PCT'] = shift_sales['NET_SALES'] / shift_sales['NET_SALES'].sum() * 100
-
-        fig2 = go.Figure(data=[go.Pie(
-            labels=[f"{row['SHIFT']} ({row['PCT']:.1f}%)" for _, row in shift_sales.iterrows()],
-            values=shift_sales['NET_SALES'],
+        sales_channel = df.groupby('SALES_CHANNEL_L1', as_index=False)['NET_SALES'].sum()
+        sales_channel['PCT'] = sales_channel['NET_SALES'] / sales_channel['NET_SALES'].sum() * 100
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=[f"{row['SALES_CHANNEL_L1']} ({row['PCT']:.1f}%)" for _, row in sales_channel.iterrows()],
+            values=sales_channel['NET_SALES'],
             hole=0.65
         )])
-        fig2.update_layout(title="Sales Distribution by Shift", height=500)
-        st.plotly_chart(fig2, use_container_width=True)
+        fig.update_layout(title="Sales by Channel L1", height=480)
+        st.plotly_chart(fig, use_container_width=True, key="pie1")
+    
+    with col2:
+        shift_sales = df.groupby('SHIFT')['NET_SALES'].sum()
+        fig2 = px.pie(names=shift_sales.index, values=shift_sales.values, hole=0.65,
+                      title="Sales by Shift")
+        st.plotly_chart(fig2, use_container_width=True, key="pie2")
 
-    # Store Sales Summary Table
-    st.subheader("Store Performance Summary")
-    store_summary = filtered_df.groupby('STORE_NAME').agg({
+    # Store Summary
+    store_summary = df.groupby('STORE_NAME').agg({
         'NET_SALES': 'sum',
         'GROSS_SALES': 'sum',
         'CUST_CODE': 'nunique'
     }).reset_index()
-    store_summary.columns = ['STORE_NAME', 'NET_SALES', 'GROSS_SALES', 'Unique_Receipts']
-    store_summary['Avg_Basket_Value'] = store_summary['GROSS_SALES'] / store_summary['Unique_Receipts']
+    store_summary['Avg_Basket'] = store_summary['GROSS_SALES'] / store_summary['CUST_CODE']
     store_summary = store_summary.sort_values('GROSS_SALES', ascending=False)
-
+    
+    st.subheader("Store Performance")
     st.dataframe(
         store_summary.style.format({
             'NET_SALES': '{:,.0f}',
             'GROSS_SALES': '{:,.0f}',
-            'Unique_Receipts': '{:,.0f}',
-            'Avg_Basket_Value': '{:,.2f}'
+            'CUST_CODE': '{:,.0f}',
+            'Avg_Basket': '{:,.2f}'
         }),
-        use_container_width=True,
-        height=500
+        width="100%",  # Fixed deprecation
+        height=400
     )
 
-# ====================== TAB 2: CUSTOMER TRAFFIC & TILLS ======================
+# ====================== TAB 2: TRAFFIC & TILLS ======================
 with tab2:
-    st.header("Customer Traffic & Till Activity")
-
-    # Customer Traffic Heatmap (30-min)
-    st.subheader("Customer Traffic Heatmap (30-min intervals)")
-    # (You can keep or simplify the complex heatmap logic here)
-    # For brevity, here's a simplified version:
-
-    filtered_df['TIME_INTERVAL'] = filtered_df['TRN_DATE'].dt.floor('30T')
-    traffic = filtered_df.groupby(['STORE_NAME', filtered_df['TIME_INTERVAL'].dt.time])['CUST_CODE'].nunique().reset_index()
-    traffic_pivot = traffic.pivot(index='STORE_NAME', columns='TIME_INTERVAL', values='CUST_CODE').fillna(0)
-
+    st.header("Customer Traffic & Tills")
+    
+    # Simple 30-min traffic
+    df['TIME_30'] = df['TRN_DATE'].dt.floor('30T').dt.time
+    traffic = df.groupby(['STORE_NAME', 'TIME_30'])['CUST_CODE'].nunique().reset_index()
+    pivot_traffic = traffic.pivot(index='STORE_NAME', columns='TIME_30', values='CUST_CODE').fillna(0)
+    
     fig_traffic = px.imshow(
-        traffic_pivot,
+        pivot_traffic,
         labels=dict(x="Time of Day", y="Store", color="Receipts"),
         color_continuous_scale='Reds',
-        title="Customer Traffic by Store & Time"
+        title="Customer Traffic Heatmap (30-min slots)"
     )
-    st.plotly_chart(fig_traffic, use_container_width=True)
-
-    # Active Tills
-    st.subheader("Active Tills per Store")
-    till_activity = filtered_df.groupby(['STORE_NAME', filtered_df['TRN_DATE'].dt.time])['Till_Code'].nunique().reset_index()
-    st.dataframe(till_activity, use_container_width=True)
+    st.plotly_chart(fig_traffic, width="100%")
 
 # ====================== TAB 3: BASKETS & PRODUCTS ======================
 with tab3:
     st.header("Baskets & Product Performance")
-
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        top_items = (
-            filtered_df.groupby('ITEM_NAME')
-            .agg(Baskets=('CUST_CODE', 'nunique'), QTY=('QTY', 'sum'), NET_SALES=('NET_SALES', 'sum'))
-            .sort_values('Baskets', ascending=False)
-            .head(20)
-        )
-        st.subheader("Top 20 Items by Baskets")
-        st.dataframe(top_items.style.format({'QTY': '{:,.0f}', 'NET_SALES': '{:,.0f}'}))
-
-    with col_b:
-        category_sales = filtered_df.groupby('CATEGORY')['NET_SALES'].sum().sort_values(ascending=False)
-        fig_cat = px.bar(
-            x=category_sales.values,
-            y=category_sales.index,
-            orientation='h',
-            title="Sales by Category"
-        )
-        st.plotly_chart(fig_cat, use_container_width=True)
+    
+    top_items = (
+        df.groupby('ITEM_NAME')
+        .agg(Baskets=('CUST_CODE', 'nunique'),
+             Qty=('QTY', 'sum'),
+             Sales=('NET_SALES', 'sum'))
+        .sort_values('Baskets', ascending=False)
+        .head(15)
+    )
+    
+    st.subheader("Top 15 Items by Number of Baskets")
+    st.dataframe(top_items.style.format({'Qty': '{:,.0f}', 'Sales': '{:,.0f}'}), width="100%")
 
 # ====================== TAB 4: LOYALTY & REFUNDS ======================
 with tab4:
     st.header("Loyalty & Refunds")
-
-    if 'LOYALTY_CUSTOMER_CODE' in filtered_df.columns:
-        loyal = filtered_df[filtered_df['LOYALTY_CUSTOMER_CODE'].notna() & (filtered_df['LOYALTY_CUSTOMER_CODE'] != '')]
-        st.metric("Loyalty Customers", f"{loyal['LOYALTY_CUSTOMER_CODE'].nunique():,}")
-
-    # Refunds
-    refunds = filtered_df[filtered_df['NET_SALES'] < 0]
-    st.subheader(f"Refunds / Negative Sales: {len(refunds):,} transactions")
-    if not refunds.empty:
-        refund_summary = refunds.groupby('STORE_NAME')['NET_SALES'].sum().abs()
-        st.bar_chart(refund_summary)
-
-# ====================== TAB 5: RAW SUMMARY TABLES ======================
-with tab5:
-    st.header("Raw Summary Tables")
     
-    if st.checkbox("Show Full Data Sample"):
-        st.dataframe(filtered_df.head(1000), use_container_width=True)
+    refunds = df[df['NET_SALES'] < 0]
+    st.metric("Negative Transactions (Refunds)", f"{len(refunds):,}")
+    
+    if not refunds.empty:
+        refund_by_store = refunds.groupby('STORE_NAME')['NET_SALES'].sum().abs()
+        st.bar_chart(refund_by_store)
 
-    st.subheader("Store-wise Sales Summary")
-    summary_table = filtered_df.groupby('STORE_NAME').agg({
-        'NET_SALES': 'sum',
-        'GROSS_SALES': 'sum',
-        'CUST_CODE': 'nunique',
-        'ITEM_CODE': 'nunique'
-    }).round(2)
-    summary_table.columns = ['Net Sales', 'Gross Sales', 'Unique Receipts', 'Unique Items']
-    st.dataframe(summary_table.style.format({
-        'Net Sales': '{:,.0f}',
-        'Gross Sales': '{:,.0f}',
-        'Unique Receipts': '{:,.0f}',
-        'Unique Items': '{:,.0f}'
-    }), use_container_width=True)
+# ====================== TAB 5: TABLES ======================
+with tab5:
+    st.header("Summary Tables")
+    st.dataframe(
+        df.groupby('STORE_NAME')[['NET_SALES', 'GROSS_SALES']].sum()
+          .style.format('{:,.0f}'),
+        width="100%"
+    )
 
-# ====================== FOOTER ======================
-st.caption("Daily Deck Dashboard | Built with Streamlit | Data: 2026-03-22")
+st.caption("Daily Deck Dashboard | Fixed for Streamlit Cloud • 2026-03-25")
+
+# Optional: Download cleaned data
+@st.cache_data
+def convert_df(df):
+    return df.to_parquet(index=False)
+
+if st.button("📥 Download Cleaned Parquet"):
+    parquet_file = convert_df(df)
+    st.download_button(
+        label="Download parquet",
+        data=parquet_file,
+        file_name="cleaned_daily_pos.parquet",
+        mime="application/octet-stream"
+    )
