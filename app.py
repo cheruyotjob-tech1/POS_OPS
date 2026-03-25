@@ -4,50 +4,57 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import timedelta
-from pathlib import Path
-from io import BytesIO
+import pyarrow.parquet as pq
 
-st.set_page_config(layout="wide", page_title="Superdeck (Parquet Version)")
+st.set_page_config(layout="wide", page_title="Superdeck (Streamlit)")
+# Add the following at the very top of your Streamlit script, AFTER st.set_page_config
+
+
 
 # -----------------------
-# Data Loading & Caching
 # -----------------------
+# Data Loading & Caching (CSV + Parquet)
+# -----------------------
+@st.cache_data
+def load_file(path: str) -> pd.DataFrame:
+    """Load from local path — auto-detects .csv or .parquet"""
+    if path.lower().endswith('.parquet'):
+        return pd.read_parquet(path)
+    else:
+        return pd.read_csv(path, on_bad_lines='skip', low_memory=False)
 
 @st.cache_data
-def load_parquet(path: str) -> pd.DataFrame:
-    return pd.read_parquet(path, engine="pyarrow")
-
-
-@st.cache_data
-def load_uploaded_parquet(contents: bytes) -> pd.DataFrame:
-    return pd.read_parquet(BytesIO(contents), engine="pyarrow")
-
+def load_uploaded_file(contents: bytes, filename: str) -> pd.DataFrame:
+    """Load uploaded file — supports .csv and .parquet"""
+    from io import BytesIO
+    if filename.lower().endswith('.parquet'):
+        return pd.read_parquet(BytesIO(contents))
+    else:
+        return pd.read_csv(BytesIO(contents), on_bad_lines='skip', low_memory=False)
 
 def smart_load():
-    st.sidebar.markdown("### Upload data (Parquet) or use default")
+    st.sidebar.markdown("### Upload data (CSV or Parquet) or use default")
     
     uploaded = st.sidebar.file_uploader(
-        "Upload DAILY_POS_TRN_ITEMS Parquet",
-        type=['parquet']
+        "Upload DAILY_POS_TRN_ITEMS file", 
+        type=['csv', 'parquet']
     )
-
-    # If user uploads a parquet file
+    
     if uploaded is not None:
-        with st.spinner("Parsing uploaded Parquet file..."):
-            df = load_uploaded_parquet(uploaded.getvalue())
-        st.sidebar.success("Loaded uploaded Parquet file")
+        with st.spinner("Parsing uploaded file..."):
+            df = load_uploaded_file(uploaded.getvalue(), uploaded.name)
+        st.sidebar.success(f"Loaded uploaded {uploaded.name}")
         return df
 
-    # Default local parquet path (edit this if needed)
-    default_path = r"C:\POS_DATA\DAILY_POS_TRN_ITEMS_2025-10-21.parquet"
-
+    # Try default path (optional) — now supports parquet too
+    default_path = "/content/DAILY_POS_TRN_ITEMS_2025-10-21.csv"   # change extension if your default is parquet
     try:
-        with st.spinner(f"Loading default Parquet: {default_path}"):
-            df = load_parquet(default_path)
-        st.sidebar.info(f"Loaded default path: {default_path}")
+        with st.spinner(f"Loading default file: {default_path}"):
+            df = load_file(default_path)
+        st.sidebar.info(f"Loaded default: {default_path}")
         return df
     except Exception:
-        st.sidebar.warning("No default Parquet file found. Please upload a file to run the app.")
+        st.sidebar.warning("No default file found. Please upload a CSV or Parquet file.")
         return None
 
 # -----------------------
