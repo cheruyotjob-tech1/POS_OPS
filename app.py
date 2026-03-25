@@ -3,12 +3,11 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 from io import BytesIO
-from decimal import Decimal, ROUND_HALF_UP
 
 st.set_page_config(page_title="Quickmart Daily Deck", layout="wide", page_icon="🛒")
 
 st.title("🛒 Quickmart Daily Deck")
-st.subheader("POS Intelligence Platform • Full Notebook Recreation")
+st.subheader("POS Intelligence Platform • Full Notebook Recreation with Multiple Files")
 
 # ====================== MULTIPLE FILE UPLOAD ======================
 st.sidebar.header("📤 Upload Parquet Files")
@@ -20,13 +19,15 @@ uploaded_files = st.sidebar.file_uploader(
 
 @st.cache_data
 def load_and_merge_parquets(files):
+    if not files:
+        return None
     dfs = []
     for f in files:
         df_temp = pd.read_parquet(BytesIO(f.getvalue()))
         dfs.append(df_temp)
     df = pd.concat(dfs, ignore_index=True)
     
-    # === Exact cleaning from your notebook ===
+    # Exact cleaning from your notebook
     df['TRN_DATE'] = pd.to_datetime(df['TRN_DATE'], errors='coerce')
     numeric_cols = ['QTY', 'CP_PRE_VAT', 'SP_PRE_VAT', 'COST_PRE_VAT', 'NET_SALES', 'VAT_AMT']
     for col in numeric_cols:
@@ -35,13 +36,18 @@ def load_and_merge_parquets(files):
     return df
 
 if uploaded_files:
-    if st.sidebar.button("🚀 Load & Merge All Uploaded Files", type="primary"):
-        with st.spinner("Merging files..."):
+    if st.sidebar.button("🚀 Load & Merge All Files", type="primary"):
+        with st.spinner("Merging parquet files..."):
             df = load_and_merge_parquets(uploaded_files)
-            st.session_state['df'] = df
-            st.sidebar.success(f"✅ Merged {len(uploaded_files)} files → {df.shape[0]:,} rows")
+            if df is not None:
+                st.session_state['df'] = df
+                st.sidebar.success(f"✅ Merged {len(uploaded_files)} files → {df.shape[0]:,} rows")
 else:
-    st.info("👈 Upload your parquet file(s) from your PC (you can select multiple)")
+    st.info("👈 Please upload your parquet file(s) using the sidebar (multiple files supported)")
+    st.stop()
+
+# Safe access to df
+if 'df' not in st.session_state:
     st.stop()
 
 df = st.session_state['df']
@@ -79,11 +85,10 @@ with tab1:
                          color='Total_Sales')
             st.plotly_chart(fig, use_container_width=True)
 
-# ====================== TAB 2: Loyalty (Exact from your notebook) ======================
+# ====================== TAB 2: Loyalty ======================
 with tab2:
     st.header("Loyalty Overview")
     
-    # Rebuild receipts safely
     dfL = df.copy()
     if 'CUST_CODE' not in dfL.columns:
         dfL['CUST_CODE'] = dfL.get('RCT', dfL.index.astype(str))
@@ -94,7 +99,7 @@ with tab2:
         .agg(Basket_Value=('NET_SALES', 'sum'), First_Time=('TRN_DATE', 'min'))
     )
     
-    sub1, sub2, sub3 = st.tabs(["🌍 Global Overview", "🏬 By Branch", "👤 Customer Drilldown"])
+    sub1, sub2, sub3 = st.tabs(["🌍 Global", "🏬 By Branch", "👤 Customer Drilldown"])
     
     with sub1:
         per_branch_multi = receipts.groupby(['STORE_NAME', 'LOYALTY_CUSTOMER_CODE']).agg(
@@ -108,7 +113,8 @@ with tab2:
             Total_Baskets=('Baskets_in_Store', 'sum'),
             Total_Value=('Total_Value_in_Store', 'sum')
         ).reset_index()
-        overview['Avg_Baskets_per_Customer'] = (overview['Total_Baskets'] / overview['Loyal_Customers_Multi']).round(2)
+        if not overview.empty:
+            overview['Avg_Baskets_per_Customer'] = (overview['Total_Baskets'] / overview['Loyal_Customers_Multi']).round(2)
         st.dataframe(overview, use_container_width=True, hide_index=True)
     
     with sub2:
@@ -120,11 +126,13 @@ with tab2:
         st.dataframe(per_store[per_store['Baskets'] > 1], use_container_width=True, hide_index=True)
     
     with sub3:
-        cust_code = st.text_input("Loyalty Customer Code")
+        cust_code = st.text_input("Enter Loyalty Customer Code")
         if cust_code:
             rc = receipts[receipts['LOYALTY_CUSTOMER_CODE'].astype(str) == cust_code.strip()]
             if not rc.empty:
                 st.dataframe(rc, use_container_width=True, hide_index=True)
+            else:
+                st.warning("No data found for this customer")
 
 # ====================== TAB 3: Pricing ======================
 with tab3:
@@ -151,11 +159,12 @@ with tab3:
         Max_Spread=('Price_Spread', 'max')
     ).reset_index()
     
-    total_row = pd.DataFrame([['TOTAL', summary['Items_with_MultiPrice'].sum(),
+    total_row = pd.DataFrame([['TOTAL', 
+                               summary['Items_with_MultiPrice'].sum(),
                                summary['Total_Diff_Value'].sum(),
                                summary['Avg_Spread'].max() if not summary.empty else 0,
                                summary['Max_Spread'].max() if not summary.empty else 0]],
-                             columns=summary.columns)
+                             columns=['STORE_NAME', 'Items_with_MultiPrice', 'Total_Diff_Value', 'Avg_Spread', 'Max_Spread'])
     st.dataframe(pd.concat([summary, total_row], ignore_index=True), use_container_width=True, hide_index=True)
 
 # ====================== TAB 4: Refunds ======================
@@ -174,6 +183,6 @@ with tab4:
         st.dataframe(summary, use_container_width=True, hide_index=True)
         st.metric("Total Negative Value", f"KSh {neg['NET_SALES'].sum():,.0f}")
     else:
-        st.info("No refunds/voids in the loaded data.")
+        st.info("No negative sales found.")
 
-st.caption("✅ Full faithful recreation of your notebook • Supports multiple parquet files • Fixed all errors")
+st.caption("✅ Fixed version • Supports multiple parquet files • All notebook sections covered")
