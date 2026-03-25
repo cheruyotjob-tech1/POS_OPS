@@ -1,194 +1,248 @@
+# -*- coding: utf-8 -*-
+"""
+Daily Deck Dashboard - Streamlit App
+"""
+
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import numpy as np
-from io import BytesIO
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import timedelta
+import warnings
 
-st.set_page_config(page_title="Quickmart Daily Deck", layout="wide", page_icon="🛒")
+warnings.filterwarnings('ignore')
 
-st.title("🛒 Quickmart Daily Deck")
-st.subheader("POS Intelligence Platform • Full Notebook Recreation")
-
-# ====================== MULTIPLE FILE UPLOAD ======================
-st.sidebar.header("📤 Upload Parquet Files")
-uploaded_files = st.sidebar.file_uploader(
-    "Upload one or more DAILY_POS_TRN_ITEMS_*.parquet files",
-    type=["parquet"],
-    accept_multiple_files=True
+# ====================== PAGE CONFIG ======================
+st.set_page_config(
+    page_title="Daily Deck Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+st.title("📊 Daily Deck Dashboard - 2026-03-22")
+st.markdown("### POS Transaction Analysis")
+
+# ====================== LOAD DATA ======================
 @st.cache_data
-def load_and_merge_parquets(files):
-    if not files:
-        return None
-    dfs = [pd.read_parquet(BytesIO(f.getvalue())) for f in files]
-    df = pd.concat(dfs, ignore_index=True)
-    
-    # === Exact cleaning from your notebook ===
+def load_data():
+    df = pd.read_parquet('DAILY_POS_TRN_ITEMS_2026-03-22.parquet')
+    return df
+
+df = load_data()
+
+# ====================== BASIC CLEANING ======================
+with st.spinner("Cleaning and preparing data..."):
+    # Date conversion
     df['TRN_DATE'] = pd.to_datetime(df['TRN_DATE'], errors='coerce')
+    df['ZED_DATE'] = pd.to_datetime(df['ZED_DATE'], errors='coerce')
+
+    # Numeric columns
     numeric_cols = ['QTY', 'CP_PRE_VAT', 'SP_PRE_VAT', 'COST_PRE_VAT', 'NET_SALES', 'VAT_AMT']
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-    
-    # === CRITICAL: Create CUST_CODE exactly as in your notebook ===
-    df['STORE_CODE'] = df['STORE_CODE'].astype(str).fillna('')
-    df['TILL'] = df['TILL'].astype(str).fillna('')
-    df['SESSION'] = df['SESSION'].astype(str).fillna('')
-    df['RCT'] = df['RCT'].astype(str).fillna('')
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(',', '', regex=False)
+                .str.strip()
+            )
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Derived columns
+    if 'GROSS_SALES' not in df.columns:
+        df['GROSS_SALES'] = df['NET_SALES'] + df['VAT_AMT']
+
+    # Unique Receipt Code
+    for col in ['STORE_CODE', 'TILL', 'SESSION', 'RCT']:
+        df[col] = df[col].astype(str).fillna('').str.strip()
     
     df['CUST_CODE'] = (
-        df['STORE_CODE'].str.strip() + '-' +
-        df['TILL'].str.strip() + '-' +
-        df['SESSION'].str.strip() + '-' +
-        df['RCT'].str.strip()
+        df['STORE_CODE'] + '-' +
+        df['TILL'] + '-' +
+        df['SESSION'] + '-' +
+        df['RCT']
     )
-    
-    st.sidebar.success(f"✅ CUST_CODE created successfully ({df['CUST_CODE'].nunique():,} unique receipts)")
-    return df
 
-if uploaded_files:
-    if st.sidebar.button("🚀 Load & Merge All Files", type="primary"):
-        with st.spinner("Merging files and creating CUST_CODE..."):
-            df = load_and_merge_parquets(uploaded_files)
-            if df is not None:
-                st.session_state['df'] = df
-else:
-    st.info("👈 Upload your parquet file(s) from your PC (multiple files supported)")
-    st.stop()
+    df['Till_Code'] = df['TILL'] + '-' + df['STORE_CODE']
+    df['CASHIER-COUNT'] = df['CASHIER'].astype(str).str.strip() + '-' + df['STORE_NAME'].astype(str).str.strip()
 
-if 'df' not in st.session_state:
-    st.stop()
+st.success(f"✅ Data loaded successfully! Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
 
-df = st.session_state['df']
+# ====================== SIDEBAR FILTERS ======================
+st.sidebar.header("🔍 Filters")
+
+selected_stores = st.sidebar.multiselect(
+    "Select Stores",
+    options=sorted(df['STORE_NAME'].unique()),
+    default=sorted(df['STORE_NAME'].unique())[:5] if len(df['STORE_NAME'].unique()) > 5 else None
+)
+
+date_range = st.sidebar.date_input(
+    "Transaction Date Range",
+    value=(df['TRN_DATE'].min().date(), df['TRN_DATE'].max().date())
+)
+
+# Apply filters
+mask = (df['TRN_DATE'].dt.date >= date_range[0]) & (df['TRN_DATE'].dt.date <= date_range[1])
+if selected_stores:
+    mask = mask & df['STORE_NAME'].isin(selected_stores)
+
+filtered_df = df[mask].copy()
 
 # ====================== TABS ======================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🧺 SKU Basket Analysis",
-    "👥 Loyalty Overview",
-    "🏷️ Pricing Intelligence",
-    "🔄 Refunds & Voids"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Sales Overview", 
+    "👥 Customer Traffic & Tills", 
+    "🛒 Baskets & Products", 
+    "💰 Loyalty & Refunds", 
+    "📋 Raw Summary Tables"
 ])
 
-# ====================== TAB 1: SKU Basket ======================
+# ====================== TAB 1: SALES OVERVIEW ======================
 with tab1:
-    st.header("SKU Basket Composition")
-    df['SKU_Display'] = df['ITEM_CODE'].astype(str) + " • " + df['ITEM_NAME'].astype(str)
-    selected = st.selectbox("Select Item", sorted(df['SKU_Display'].unique()))
-    
-    if selected:
-        code = selected.split(" • ")[0]
-        item_df = df[df['ITEM_CODE'].astype(str) == code].copy()
-        
-        summary = item_df.groupby('STORE_NAME').agg(
-            Baskets=('TRN_DATE', 'nunique'),
-            Total_QTY=('QTY', 'sum'),
-            Total_Sales=('NET_SALES', 'sum')
-        ).reset_index()
-        
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(summary, use_container_width=True, hide_index=True)
-        with col2:
-            fig = px.bar(summary, x='STORE_NAME', y='Total_QTY', 
-                         title=f"Quantity by Store — {selected}",
-                         color='Total_Sales')
-            st.plotly_chart(fig, use_container_width=True)
+    st.header("Sales Overview")
 
-# ====================== TAB 2: Loyalty (now safe with CUST_CODE) ======================
-with tab2:
-    st.header("Loyalty Overview")
-    
-    receipts = (
-        df[df['LOYALTY_CUSTOMER_CODE'].notna()]
-        .groupby(['STORE_NAME', 'CUST_CODE', 'LOYALTY_CUSTOMER_CODE'], as_index=False)
-        .agg(Basket_Value=('NET_SALES', 'sum'), First_Time=('TRN_DATE', 'min'))
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Global Sales by Channel L1
+        global_sales = filtered_df.groupby('SALES_CHANNEL_L1', as_index=False)['NET_SALES'].sum()
+        global_sales['NET_SALES_M'] = global_sales['NET_SALES'] / 1_000_000
+        global_sales['PCT'] = global_sales['NET_SALES'] / global_sales['NET_SALES'].sum() * 100
+
+        fig1 = go.Figure(data=[go.Pie(
+            labels=[f"{row['SALES_CHANNEL_L1']} ({row['PCT']:.1f}%)" for _, row in global_sales.iterrows()],
+            values=global_sales['NET_SALES_M'],
+            hole=0.65,
+            hovertemplate='<b>%{label}</b><br>KSh %{value:,.2f}M<extra></extra>'
+        )])
+        fig1.update_layout(title="Sales by Channel (L1) - Millions KSh", height=500)
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+        # Sales by SHIFT
+        shift_sales = filtered_df.groupby('SHIFT', as_index=False)['NET_SALES'].sum()
+        shift_sales['PCT'] = shift_sales['NET_SALES'] / shift_sales['NET_SALES'].sum() * 100
+
+        fig2 = go.Figure(data=[go.Pie(
+            labels=[f"{row['SHIFT']} ({row['PCT']:.1f}%)" for _, row in shift_sales.iterrows()],
+            values=shift_sales['NET_SALES'],
+            hole=0.65
+        )])
+        fig2.update_layout(title="Sales Distribution by Shift", height=500)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Store Sales Summary Table
+    st.subheader("Store Performance Summary")
+    store_summary = filtered_df.groupby('STORE_NAME').agg({
+        'NET_SALES': 'sum',
+        'GROSS_SALES': 'sum',
+        'CUST_CODE': 'nunique'
+    }).reset_index()
+    store_summary.columns = ['STORE_NAME', 'NET_SALES', 'GROSS_SALES', 'Unique_Receipts']
+    store_summary['Avg_Basket_Value'] = store_summary['GROSS_SALES'] / store_summary['Unique_Receipts']
+    store_summary = store_summary.sort_values('GROSS_SALES', ascending=False)
+
+    st.dataframe(
+        store_summary.style.format({
+            'NET_SALES': '{:,.0f}',
+            'GROSS_SALES': '{:,.0f}',
+            'Unique_Receipts': '{:,.0f}',
+            'Avg_Basket_Value': '{:,.2f}'
+        }),
+        use_container_width=True,
+        height=500
     )
-    
-    sub1, sub2, sub3 = st.tabs(["🌍 Global", "🏬 By Branch", "👤 Customer Drilldown"])
-    
-    with sub1:
-        per_branch_multi = receipts.groupby(['STORE_NAME', 'LOYALTY_CUSTOMER_CODE']).agg(
-            Baskets_in_Store=('CUST_CODE', 'nunique'),
-            Total_Value_in_Store=('Basket_Value', 'sum')
-        ).reset_index()
-        per_branch_multi = per_branch_multi[per_branch_multi['Baskets_in_Store'] > 1]
-        
-        overview = per_branch_multi.groupby('STORE_NAME').agg(
-            Loyal_Customers_Multi=('LOYALTY_CUSTOMER_CODE', 'nunique'),
-            Total_Baskets=('Baskets_in_Store', 'sum'),
-            Total_Value=('Total_Value_in_Store', 'sum')
-        ).reset_index()
-        if not overview.empty and overview['Loyal_Customers_Multi'].sum() > 0:
-            overview['Avg_Baskets_per_Customer'] = (overview['Total_Baskets'] / overview['Loyal_Customers_Multi']).round(2)
-        st.dataframe(overview, use_container_width=True, hide_index=True)
-    
-    with sub2:
-        branch = st.selectbox("Select Branch", df['STORE_NAME'].unique(), key="loyal_branch")
-        per_store = receipts[receipts['STORE_NAME'] == branch].groupby('LOYALTY_CUSTOMER_CODE').agg(
-            Baskets=('CUST_CODE', 'nunique'),
-            Total_Value=('Basket_Value', 'sum')
-        ).reset_index()
-        st.dataframe(per_store[per_store['Baskets'] > 1], use_container_width=True, hide_index=True)
-    
-    with sub3:
-        cust_code = st.text_input("Enter Loyalty Customer Code")
-        if cust_code:
-            rc = receipts[receipts['LOYALTY_CUSTOMER_CODE'].astype(str) == cust_code.strip()]
-            if not rc.empty:
-                st.dataframe(rc, use_container_width=True, hide_index=True)
-            else:
-                st.warning("No data found for this customer")
 
-# ====================== TAB 3: Pricing ======================
+# ====================== TAB 2: CUSTOMER TRAFFIC & TILLS ======================
+with tab2:
+    st.header("Customer Traffic & Till Activity")
+
+    # Customer Traffic Heatmap (30-min)
+    st.subheader("Customer Traffic Heatmap (30-min intervals)")
+    # (You can keep or simplify the complex heatmap logic here)
+    # For brevity, here's a simplified version:
+
+    filtered_df['TIME_INTERVAL'] = filtered_df['TRN_DATE'].dt.floor('30T')
+    traffic = filtered_df.groupby(['STORE_NAME', filtered_df['TIME_INTERVAL'].dt.time])['CUST_CODE'].nunique().reset_index()
+    traffic_pivot = traffic.pivot(index='STORE_NAME', columns='TIME_INTERVAL', values='CUST_CODE').fillna(0)
+
+    fig_traffic = px.imshow(
+        traffic_pivot,
+        labels=dict(x="Time of Day", y="Store", color="Receipts"),
+        color_continuous_scale='Reds',
+        title="Customer Traffic by Store & Time"
+    )
+    st.plotly_chart(fig_traffic, use_container_width=True)
+
+    # Active Tills
+    st.subheader("Active Tills per Store")
+    till_activity = filtered_df.groupby(['STORE_NAME', filtered_df['TRN_DATE'].dt.time])['Till_Code'].nunique().reset_index()
+    st.dataframe(till_activity, use_container_width=True)
+
+# ====================== TAB 3: BASKETS & PRODUCTS ======================
 with tab3:
-    st.header("Pricing Intelligence")
-    dfp = df.copy()
-    dfp['DATE'] = dfp['TRN_DATE'].dt.date
-    dfp['SP_PRE_VAT'] = pd.to_numeric(dfp['SP_PRE_VAT'].astype(str).str.replace(',', ''), errors='coerce')
-    
-    grp = dfp.groupby(['STORE_NAME', 'DATE', 'ITEM_CODE', 'ITEM_NAME']).agg(
-        Num_Prices=('SP_PRE_VAT', 'nunique'),
-        Price_Min=('SP_PRE_VAT', 'min'),
-        Price_Max=('SP_PRE_VAT', 'max'),
-        Total_QTY=('QTY', 'sum')
-    ).reset_index()
-    
-    grp['Price_Spread'] = (grp['Price_Max'] - grp['Price_Min']).round(2)
-    multi_price = grp[(grp['Num_Prices'] > 1) & (grp['Price_Spread'] > 0)].copy()
-    multi_price['Diff_Value'] = (multi_price['Total_QTY'] * multi_price['Price_Spread']).round(2)
-    
-    summary = multi_price.groupby('STORE_NAME').agg(
-        Items_with_MultiPrice=('ITEM_CODE', 'nunique'),
-        Total_Diff_Value=('Diff_Value', 'sum'),
-        Avg_Spread=('Price_Spread', 'mean'),
-        Max_Spread=('Price_Spread', 'max')
-    ).reset_index()
-    
-    total_row = pd.DataFrame([['TOTAL', 
-                               summary['Items_with_MultiPrice'].sum(),
-                               summary['Total_Diff_Value'].sum(),
-                               summary['Avg_Spread'].max() if not summary.empty else 0,
-                               summary['Max_Spread'].max() if not summary.empty else 0]],
-                             columns=['STORE_NAME', 'Items_with_MultiPrice', 'Total_Diff_Value', 'Avg_Spread', 'Max_Spread'])
-    st.dataframe(pd.concat([summary, total_row], ignore_index=True), use_container_width=True, hide_index=True)
+    st.header("Baskets & Product Performance")
 
-# ====================== TAB 4: Refunds ======================
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        top_items = (
+            filtered_df.groupby('ITEM_NAME')
+            .agg(Baskets=('CUST_CODE', 'nunique'), QTY=('QTY', 'sum'), NET_SALES=('NET_SALES', 'sum'))
+            .sort_values('Baskets', ascending=False)
+            .head(20)
+        )
+        st.subheader("Top 20 Items by Baskets")
+        st.dataframe(top_items.style.format({'QTY': '{:,.0f}', 'NET_SALES': '{:,.0f}'}))
+
+    with col_b:
+        category_sales = filtered_df.groupby('CATEGORY')['NET_SALES'].sum().sort_values(ascending=False)
+        fig_cat = px.bar(
+            x=category_sales.values,
+            y=category_sales.index,
+            orientation='h',
+            title="Sales by Category"
+        )
+        st.plotly_chart(fig_cat, use_container_width=True)
+
+# ====================== TAB 4: LOYALTY & REFUNDS ======================
 with tab4:
-    st.header("Refunds & Voids")
-    d = df.copy()
-    d['NET_SALES'] = pd.to_numeric(d['NET_SALES'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-    d['Sale_Type'] = np.where(d['CAP_CUSTOMER_CODE'].fillna('') == '', 'General sales', 'On_account sales')
-    
-    neg = d[d['NET_SALES'] < 0].copy()
-    if not neg.empty:
-        summary = neg.groupby(['STORE_NAME', 'Sale_Type']).agg(
-            Total_Neg_Value=('NET_SALES', 'sum'),
-            Total_Count=('NET_SALES', 'count')
-        ).reset_index()
-        st.dataframe(summary, use_container_width=True, hide_index=True)
-        st.metric("Total Negative Value", f"KSh {neg['NET_SALES'].sum():,.0f}")
-    else:
-        st.info("No negative sales found.")
+    st.header("Loyalty & Refunds")
 
-st.caption("✅ Final Fixed Version • CUST_CODE created correctly • Multiple files supported")
+    if 'LOYALTY_CUSTOMER_CODE' in filtered_df.columns:
+        loyal = filtered_df[filtered_df['LOYALTY_CUSTOMER_CODE'].notna() & (filtered_df['LOYALTY_CUSTOMER_CODE'] != '')]
+        st.metric("Loyalty Customers", f"{loyal['LOYALTY_CUSTOMER_CODE'].nunique():,}")
+
+    # Refunds
+    refunds = filtered_df[filtered_df['NET_SALES'] < 0]
+    st.subheader(f"Refunds / Negative Sales: {len(refunds):,} transactions")
+    if not refunds.empty:
+        refund_summary = refunds.groupby('STORE_NAME')['NET_SALES'].sum().abs()
+        st.bar_chart(refund_summary)
+
+# ====================== TAB 5: RAW SUMMARY TABLES ======================
+with tab5:
+    st.header("Raw Summary Tables")
+    
+    if st.checkbox("Show Full Data Sample"):
+        st.dataframe(filtered_df.head(1000), use_container_width=True)
+
+    st.subheader("Store-wise Sales Summary")
+    summary_table = filtered_df.groupby('STORE_NAME').agg({
+        'NET_SALES': 'sum',
+        'GROSS_SALES': 'sum',
+        'CUST_CODE': 'nunique',
+        'ITEM_CODE': 'nunique'
+    }).round(2)
+    summary_table.columns = ['Net Sales', 'Gross Sales', 'Unique Receipts', 'Unique Items']
+    st.dataframe(summary_table.style.format({
+        'Net Sales': '{:,.0f}',
+        'Gross Sales': '{:,.0f}',
+        'Unique Receipts': '{:,.0f}',
+        'Unique Items': '{:,.0f}'
+    }), use_container_width=True)
+
+# ====================== FOOTER ======================
+st.caption("Daily Deck Dashboard | Built with Streamlit | Data: 2026-03-22")
