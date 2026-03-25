@@ -1,7 +1,7 @@
 streamlit
-pandas
-numpy
-plotly
+pandas>=1.4,<2.3
+numpy>=1.23,<2
+plotly>=5.24,<6
 pyarrow
 setuptools
 wheel
