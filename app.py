@@ -24,26 +24,39 @@ def load_and_merge_parquets(files):
     dfs = [pd.read_parquet(BytesIO(f.getvalue())) for f in files]
     df = pd.concat(dfs, ignore_index=True)
     
-    # Exact cleaning from your notebook
+    # === Exact cleaning from your notebook ===
     df['TRN_DATE'] = pd.to_datetime(df['TRN_DATE'], errors='coerce')
     numeric_cols = ['QTY', 'CP_PRE_VAT', 'SP_PRE_VAT', 'COST_PRE_VAT', 'NET_SALES', 'VAT_AMT']
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
+    
+    # === CRITICAL: Create CUST_CODE exactly as in your notebook ===
+    df['STORE_CODE'] = df['STORE_CODE'].astype(str).fillna('')
+    df['TILL'] = df['TILL'].astype(str).fillna('')
+    df['SESSION'] = df['SESSION'].astype(str).fillna('')
+    df['RCT'] = df['RCT'].astype(str).fillna('')
+    
+    df['CUST_CODE'] = (
+        df['STORE_CODE'].str.strip() + '-' +
+        df['TILL'].str.strip() + '-' +
+        df['SESSION'].str.strip() + '-' +
+        df['RCT'].str.strip()
+    )
+    
+    st.sidebar.success(f"✅ CUST_CODE created successfully ({df['CUST_CODE'].nunique():,} unique receipts)")
     return df
 
 if uploaded_files:
     if st.sidebar.button("🚀 Load & Merge All Files", type="primary"):
-        with st.spinner("Merging parquet files..."):
+        with st.spinner("Merging files and creating CUST_CODE..."):
             df = load_and_merge_parquets(uploaded_files)
             if df is not None:
                 st.session_state['df'] = df
-                st.sidebar.success(f"✅ Merged {len(uploaded_files)} files → {df.shape[0]:,} rows")
 else:
     st.info("👈 Upload your parquet file(s) from your PC (multiple files supported)")
     st.stop()
 
-# Safe guard
 if 'df' not in st.session_state:
     st.stop()
 
@@ -68,7 +81,7 @@ with tab1:
         item_df = df[df['ITEM_CODE'].astype(str) == code].copy()
         
         summary = item_df.groupby('STORE_NAME').agg(
-            Baskets=('TRN_DATE', 'nunique'),   # safe fallback
+            Baskets=('TRN_DATE', 'nunique'),
             Total_QTY=('QTY', 'sum'),
             Total_Sales=('NET_SALES', 'sum')
         ).reset_index()
@@ -82,17 +95,12 @@ with tab1:
                          color='Total_Sales')
             st.plotly_chart(fig, use_container_width=True)
 
-# ====================== TAB 2: Loyalty ======================
+# ====================== TAB 2: Loyalty (now safe with CUST_CODE) ======================
 with tab2:
     st.header("Loyalty Overview")
     
-    # Safe receipts creation (matches your notebook logic)
-    dfL = df.copy()
-    if 'CUST_CODE' not in dfL.columns:
-        dfL['CUST_CODE'] = dfL.get('RCT', dfL.index.astype(str))
-    
     receipts = (
-        dfL[dfL['LOYALTY_CUSTOMER_CODE'].notna()]
+        df[df['LOYALTY_CUSTOMER_CODE'].notna()]
         .groupby(['STORE_NAME', 'CUST_CODE', 'LOYALTY_CUSTOMER_CODE'], as_index=False)
         .agg(Basket_Value=('NET_SALES', 'sum'), First_Time=('TRN_DATE', 'min'))
     )
@@ -183,4 +191,4 @@ with tab4:
     else:
         st.info("No negative sales found.")
 
-st.caption("✅ Fixed & Final Version • Multiple files supported • All notebook sections included")
+st.caption("✅ Final Fixed Version • CUST_CODE created correctly • Multiple files supported")
